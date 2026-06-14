@@ -146,3 +146,5 @@ app.post("/api/chat", async (req, res) => {
 
   res.json({ choices: [{ message: { content: cevap } }] });
 });
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log("Kerasus backend hazır, port:", PORT));
