@@ -59,24 +59,40 @@ async function groqCagir(messages) {
 }
 
 // ── 2. GEMİNİ (internet araması dahil) ───────────────────────────────────
-async function geminiCagir(messages) {
-  const contents = messages.map(m => ({
-    role: m.role === "assistant" ? "model" : "user",
-    parts: [{ text: m.content }]
-  }));
+async function geminiCagir(messages, imageBase64) {
+  const contents = messages
+    .filter(m => m.role !== "system")
+    .map(m => ({
+      role: m.role === "assistant" ? "model" : "user",
+      parts: [{ text: m.content }]
+    }));
+
+  if (imageBase64 && contents.length > 0) {
+    contents[contents.length - 1].parts.push({
+      inline_data: {
+        mime_type: "image/jpeg",
+        data: imageBase64
+      }
+    });
+  }
+
+  const systemMsg = messages.find(m => m.role === "system");
+
+  const body = {
+    contents,
+    system_instruction: systemMsg ? { parts: [{ text: systemMsg.content }] } : undefined
+  };
+  if (!imageBase64) {
+    body.tools = [{ google_search: {} }];
+  }
 
   const data = await httpPost(
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,
     {},
-    {
-      contents,
-      system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-      tools: [{ google_search: {} }]
-    }
+    body
   );
   return data?.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
 }
-
 // ── 3. OPENROUTER (yedek) ─────────────────────────────────────────────────
 async function openrouterCagir(messages) {
   const data = await httpPost(
@@ -93,12 +109,11 @@ async function openrouterCagir(messages) {
 
 // ── ANA ENDPOINT ──────────────────────────────────────────────────────────
 app.post("/api/chat", async (req, res) => {
-  // Güvenlik kontrolü
   if (req.headers["x-app-secret"] !== APP_SECRET) {
     return res.status(401).json({ error: "Yetkisiz" });
   }
 
-  const { messages } = req.body;
+  const { messages, image } = req.body;
   if (!messages || !Array.isArray(messages)) {
     return res.status(400).json({ error: "Geçersiz istek" });
   }
@@ -107,29 +122,27 @@ app.post("/api/chat", async (req, res) => {
 
   let cevap = null;
 
-  if (counts.groq < 1000) {
-    cevap = await groqCagir(messages);
-    if (cevap) { counts.groq++; console.log(`✅ Groq (${counts.groq}/1000)`); }
-  }
-
-  if (!cevap && counts.gemini < 500) {
-    cevap = await geminiCagir(messages);
-    if (cevap) { counts.gemini++; console.log(`✅ Gemini (${counts.gemini}/500)`); }
-  }
-
-  if (!cevap && counts.openrouter < 200) {
-    cevap = await openrouterCagir(messages);
-    if (cevap) { counts.openrouter++; console.log(`✅ OpenRouter (${counts.openrouter}/200)`); }
+  if (image) {
+    cevap = await geminiCagir(messages, image);
+    if (cevap) counts.gemini++;
+  } else {
+    if (counts.groq < 1000) {
+      cevap = await groqCagir(messages);
+      if (cevap) counts.groq++;
+    }
+    if (!cevap && counts.gemini < 500) {
+      cevap = await geminiCagir(messages, null);
+      if (cevap) counts.gemini++;
+    }
+    if (!cevap && counts.openrouter < 200) {
+      cevap = await openrouterCagir(messages);
+      if (cevap) counts.openrouter++;
+    }
   }
 
   if (!cevap) {
     cevap = "Şu an tüm servisler meşgul, birkaç saniye sonra tekrar dene.";
   }
 
-  // Android'in beklediği format
-  res.json({
-    choices: [{ message: { content: cevap } }]
-  });
+  res.json({ choices: [{ message: { content: cevap } }] });
 });
-
-app.listen(3000, () => console.log("Friday backend hazır"));
