@@ -43,16 +43,15 @@ async function httpPost(url, headers, body) {
   }
 }
 
-// ── 1. GROQ ──────────────────────────────────────────────────────────────
-async function groqCagir(messages) {
+// ── 1. GROQ COMPOUND (web aramalı, yedek) ─────────────────────────────────
+async function groqCompoundCagir(messages) {
   const data = await httpPost(
     "https://api.groq.com/openai/v1/chat/completions",
     { Authorization: `Bearer ${GROQ_KEY}` },
     {
-      model: "llama-3.3-70b-versatile",
+      model: "groq/compound",
       messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
-      max_tokens: 500,
-      temperature: 0.7
+      max_tokens: 500
     }
   );
   return data?.choices?.[0]?.message?.content ?? null;
@@ -139,12 +138,11 @@ app.post("/api/chat", async (req, res) => {
       if (cevap) counts.openrouter++;
     }
   }
-
-  if (!cevap) {
-    cevap = "Şu an tüm servisler meşgul, birkaç saniye sonra tekrar dene.";
-  }
-
-  res.json({ choices: [{ message: { content: cevap } }] });
-});
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("Kerasus backend hazır, port:", PORT));
+ if (!cevap && counts.openrouter < 200) {
+  cevap = await openrouterCagir(messages);
+  if (cevap) counts.openrouter++;
+}
+if (!cevap && counts.compound < 1000) {
+  cevap = await groqCompoundCagir(messages);
+  if (cevap) counts.compound++;
+}
