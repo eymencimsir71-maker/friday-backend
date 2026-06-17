@@ -1,207 +1,148 @@
-const express = require('express');
+const express = require("express");
 const app = express();
+app.use(express.json({ limit: "10mb" }));
 
-app.use(express.json({ limit: '10mb' }));
+const APP_SECRET     = process.env.APP_SECRET;
+const GROQ_KEY       = process.env.GROQ_API_KEY;
+const GEMINI_KEY     = process.env.GEMINI_API_KEY;
+const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY;
 
-// CORS
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-app-secret');
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
-  next();
-});
+const SYSTEM_PROMPT =
+  "Sen JARVIS adında bir yapay zeka asistanısın. " +
+  "Seni Eymen Çimşir ve Yiğit Alp Arslan geliştirdi. " +
+  "Kim geliştirdi veya kim yaptı diye sorulursa 'Beni Eymen Çimşir ve Yiğit Alp Arslan geliştirdi.' de, başka isim söyleme. " +
+  "Iron Man filmindeki J.A.R.V.I.S gibi zeki, soğukkanlı ve profesyonelsin. " +
+  "Türkçe konuş. Kısa, akıcı ve doğal cevaplar ver. " +
+  "Madde madde yazma, düz konuş. " +
+  "Emin olmadığın bilgileri söyleme.";
 
-const PORT = process.env.PORT || 3000;
+// Günlük sayaçlar
+let counts = { date: "", groq: 0, gemini: 0, openrouter: 0 };
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
-const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY;
-const CEREBRAS_API_KEY = process.env.CEREBRAS_API_KEY;
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const TAVILY_API_KEY = process.env.TAVILY_API_KEY;
+function resetIfNewDay() {
+  const today = new Date().toDateString();
+  if (counts.date !== today) {
+    counts = { date: today, groq: 0, gemini: 0, openrouter: 0 };
+  }
+}
 
-const textProviders = [
-  { name: 'gemini', url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', apiKey: GEMINI_API_KEY, model: 'gemini-2.0-flash' },
-  { name: 'groq', url: 'https://api.groq.com/openai/v1/chat/completions', apiKey: GROQ_API_KEY, model: 'llama-3.3-70b-versatile' },
-  { name: 'mistral', url: 'https://api.mistral.ai/v1/chat/completions', apiKey: MISTRAL_API_KEY, model: 'mistral-large-latest' },
-  { name: 'cerebras', url: 'https://api.cerebras.ai/v1/chat/completions', apiKey: CEREBRAS_API_KEY, model: 'llama-3.3-70b' },
-  { name: 'openrouter', url: 'https://openrouter.ai/api/v1/chat/completions', apiKey: OPENROUTER_API_KEY, model: 'meta-llama/llama-3.2-3b-instruct:free' }
-];
-
-const visionProvider = { name: 'gemini-vision', url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', apiKey: GEMINI_API_KEY, model: 'gemini-2.0-flash' };
-
-// ── Tavily web arama ──────────────────────────────────────────────
-async function tavilySearch(query) {
-  if (!TAVILY_API_KEY) return null;
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
-
+async function httpPost(url, headers, body) {
   try {
-    const response = await fetch('https://api.tavily.com/search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        api_key: TAVILY_API_KEY,
-        query,
-        search_depth: 'basic',
-        include_answer: true,
-        max_results: 4
-      }),
-      signal: controller.signal
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...headers },
+      body: JSON.stringify(body)
     });
-
-    clearTimeout(timeout);
-    if (!response.ok) throw new Error(`Tavily ${response.status}`);
-
-    const data = await response.json();
-    let context = '';
-    if (data.answer) context += `Özet: ${data.answer}\n\n`;
-    if (Array.isArray(data.results)) {
-      data.results.slice(0, 4).forEach((r, i) => {
-        context += `[${i + 1}] ${r.title}: ${r.content?.slice(0, 300)}\n`;
-      });
+    if (!res.ok) {
+      console.log(`HTTP ${res.status} → ${url}`);
+      return null;
     }
-    return context.trim() || null;
-  } catch (err) {
-    clearTimeout(timeout);
-    console.error('Tavily hata:', err.message);
+    return await res.json();
+  } catch (e) {
+    console.log(`Fetch hata: ${e.message}`);
     return null;
   }
 }
 
-// Bir kelimenin/cümlenin gerçek zamanlı bilgi gerektirip gerektirmediğini kabaca tahmin et
-function aramaGerekliMi(text) {
-  if (!text) return false;
-  const t = text.toLowerCase();
-  const tetikleyiciler = [
-    'bugün', 'dün', 'yarın', 'şu an', 'güncel', 'son', 'haber', 'maç', 'skor',
-    'sonuç', 'fiyat', 'kur', 'hava durumu', 'kim', 'ne zaman', 'kaç',
-    'today', 'latest', 'news', 'score', 'price', 'weather', 'current'
-  ];
-  return tetikleyiciler.some(k => t.includes(k));
+// 1. GROQ
+async function groqCagir(messages) {
+  const data = await httpPost(
+    "https://api.groq.com/openai/v1/chat/completions",
+    { Authorization: `Bearer ${GROQ_KEY}` },
+    {
+      model: "llama-3.3-70b-versatile",
+      messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
+      max_tokens: 500,
+      temperature: 0.7
+    }
+  );
+  return data?.choices?.[0]?.message?.content ?? null;
 }
 
-async function callChatAPI(provider, messages) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 45000);
+// 2. GEMINI
+async function geminiCagir(messages, imageBase64) {
+  const contents = messages
+    .filter(m => m.role !== "system")
+    .map(m => ({
+      role: m.role === "assistant" ? "model" : "user",
+      parts: [{ text: m.content }]
+    }));
 
-  try {
-    const response = await fetch(provider.url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${provider.apiKey}`
-      },
-      body: JSON.stringify({ model: provider.model, messages }),
-      signal: controller.signal
+  if (imageBase64 && contents.length > 0) {
+    contents[contents.length - 1].parts.push({
+      inline_data: { mime_type: "image/jpeg", data: imageBase64 }
     });
+  }
 
-    clearTimeout(timeout);
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`${provider.name} ${response.status}: ${errText.slice(0, 200)}`);
+  const body = {
+    contents,
+    system_instruction: { parts: [{ text: SYSTEM_PROMPT }] }
+  };
+  if (!imageBase64) {
+    body.tools = [{ google_search: {} }];
+  }
+
+  const data = await httpPost(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,
+    {},
+    body
+  );
+  return data?.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
+}
+
+// 3. OPENROUTER
+async function openrouterCagir(messages) {
+  const data = await httpPost(
+    "https://openrouter.ai/api/v1/chat/completions",
+    { Authorization: `Bearer ${OPENROUTER_KEY}` },
+    {
+      model: "meta-llama/llama-4-maverick:free",
+      messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
+      max_tokens: 500
     }
-
-    const data = await response.json();
-    const reply = data?.choices?.[0]?.message?.content;
-    if (!reply) throw new Error(`${provider.name}: boş yanıt döndü`);
-    return reply;
-  } catch (err) {
-    clearTimeout(timeout);
-    throw err;
-  }
+  );
+  return data?.choices?.[0]?.message?.content ?? null;
 }
 
-function buildVisionMessages(messages, imageBase64) {
-  const msgs = JSON.parse(JSON.stringify(messages));
-  const lastIdx = msgs.length - 1;
-  if (msgs[lastIdx] && msgs[lastIdx].role === 'user') {
-    const textContent = msgs[lastIdx].content;
-    msgs[lastIdx] = {
-      role: 'user',
-      content: [
-        { type: 'text', text: textContent },
-        { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageBase64}` } }
-      ]
-    };
+// ANA ENDPOINT
+app.post("/api/chat", async (req, res) => {
+  if (req.headers["x-app-secret"] !== APP_SECRET) {
+    return res.status(401).json({ error: "Yetkisiz" });
   }
-  return msgs;
-}
 
-app.post('/', async (req, res) => {
   const { messages, image } = req.body;
-
   if (!messages || !Array.isArray(messages)) {
-    return res.status(400).json({ error: 'messages alanı (array) gerekli' });
+    return res.status(400).json({ error: "Geçersiz istek" });
   }
 
-  // Görsel varsa - Gemini vision
+  resetIfNewDay();
+
+  let cevap = null;
+
   if (image) {
-    try {
-      const visionMsgs = buildVisionMessages(messages, image);
-      const reply = await callChatAPI(visionProvider, visionMsgs);
-      return res.json({ choices: [{ message: { content: reply } }] });
-    } catch (err) {
-      console.error('Vision hatası:', err.message);
-      return res.json({ choices: [{ message: { content: 'Görsel şu anda analiz edilemiyor.' } }] });
+    cevap = await geminiCagir(messages, image);
+    if (cevap) counts.gemini++;
+  } else {
+    if (counts.groq < 1000) {
+      cevap = await groqCagir(messages);
+      if (cevap) counts.groq++;
+    }
+    if (!cevap && counts.gemini < 500) {
+      cevap = await geminiCagir(messages, null);
+      if (cevap) counts.gemini++;
+    }
+    if (!cevap && counts.openrouter < 200) {
+      cevap = await openrouterCagir(messages);
+      if (cevap) counts.openrouter++;
     }
   }
 
-  // Son kullanıcı mesajını bul
-  const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
-  const soru = lastUserMsg ? lastUserMsg.content : '';
-
-  // Gerekirse web araması yap
-  let finalMessages = messages;
-  if (aramaGerekliMi(soru)) {
-    const context = await tavilySearch(soru);
-    if (context) {
-      const searchMsg = {
-        role: 'system',
-        content: `Aşağıda bu soruyla ilgili güncel web arama sonuçları var. Bu bilgiyi kullanarak cevap ver:\n\n${context}`
-      };
-      // Sistem mesajından sonra, son kullanıcı mesajından önce ekle
-      finalMessages = [...messages];
-      finalMessages.splice(finalMessages.length - 1, 0, searchMsg);
-    }
+  if (!cevap) {
+    cevap = "Tüm sistemler şu an meşgul. Birkaç saniye sonra tekrar dene.";
   }
 
-  const errors = [];
-  for (const provider of textProviders) {
-    if (!provider.apiKey) {
-      errors.push(`${provider.name}: API key tanımlı değil`);
-      continue;
-    }
-    try {
-      const reply = await callChatAPI(provider, finalMessages);
-      return res.json({ choices: [{ message: { content: reply } }] });
-    } catch (err) {
-      console.error(`${provider.name} başarısız:`, err.message);
-      errors.push(`${provider.name}: ${err.message}`);
-    }
-  }
-
-  res.status(503).json({ error: 'Tüm AI sağlayıcıları başarısız oldu', details: errors });
+  res.json({ choices: [{ message: { content: cevap } }] });
 });
 
-app.get('/health', (req, res) => {
-  res.json({
-    gemini: !!GEMINI_API_KEY,
-    groq: !!GROQ_API_KEY,
-    mistral: !!MISTRAL_API_KEY,
-    cerebras: !!CEREBRAS_API_KEY,
-    openrouter: !!OPENROUTER_API_KEY,
-    tavily: !!TAVILY_API_KEY
-  });
-});
-
-app.use((err, req, res, next) => {
-  console.error('Beklenmeyen hata:', err);
-  res.status(500).json({ error: 'Sunucu hatası', detail: err.message });
-});
-
-app.listen(PORT, () => {
-  console.log(`Server ${PORT} portunda çalışıyor ✅`);
-});
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log("JARVIS backend aktif, port:", PORT));
