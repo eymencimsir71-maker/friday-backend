@@ -240,4 +240,44 @@ app.post("/api/chat", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
+const ELEVENLABS_KEY  = process.env.ELEVENLABS_API_KEY;
+const JARVIS_VOICE_ID = "WWtyH2oxeOp9yZwK8ERD"; // Jarvis - Robot sesi
+
+app.post("/api/tts", async (req, res) => {
+  if (req.headers["x-app-secret"] !== APP_SECRET) {
+    return res.status(401).json({ error: "Yetkisiz" });
+  }
+  const { text } = req.body;
+  if (!text) return res.status(400).json({ error: "Metin gerekli" });
+
+  try {
+    const response = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${JARVIS_VOICE_ID}`,
+      {
+        method: "POST",
+        headers: {
+          "xi-api-key": ELEVENLABS_KEY,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          text: text,
+          model_id: "eleven_multilingual_v2",
+          voice_settings: {
+            stability: 0.75,
+            similarity_boost: 0.85,
+            style: 0.20,
+            use_speaker_boost: true
+          }
+        })
+      }
+    );
+    if (!response.ok) return res.status(500).json({ error: "TTS başarısız" });
+    const audioBuffer = await response.arrayBuffer();
+    res.set("Content-Type", "audio/mpeg");
+    res.send(Buffer.from(audioBuffer));
+  } catch (e) {
+    res.status(500).json({ error: "TTS hatası" });
+  }
+});
+
 app.listen(PORT, () => console.log("JARVIS backend aktif, port:", PORT));
