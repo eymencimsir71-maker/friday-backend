@@ -1,14 +1,15 @@
 {
-  "name": "ai-app-backend",
+  "name": "jarvis-backend",
   "version": "1.0.0",
+  "description": "JARVIS AI Backend - Developed by Eymen Çimşir & Yiğit Alp Arslan",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "engines": {
-    "node": ">=18.x"
+    "node": ">=18.0.0"
   },
   "dependencies": {
-    "express": "^4.19.2"
+    "express": "^4.18.2"
   }
 }
