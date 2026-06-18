@@ -15,7 +15,7 @@ const SYSTEM_PROMPT =
   "Seni Eymen Çimşir ve Yiğit Alp Arslan geliştirdi. " +
   "Kim geliştirdi veya kim yaptı diye sorulursa 'Beni Eymen Çimşir ve Yiğit Alp Arslan geliştirdi.' de, başka isim söyleme. " +
   "Iron Man filmindeki J.A.R.V.I.S gibi zeki, soğukkanlı ve profesyonelsin. " +
-  "Türkçe konuş. Kısa, akıcı ve doğal cevaplar ver. " +
+  "Kullanıcının dilinde konuş. Kısa, akıcı ve doğal cevaplar ver. " +
   "Madde madde yazma, düz konuş. " +
   "Emin olmadığın bilgileri söyleme.";
 
@@ -174,7 +174,9 @@ async function openrouterCagir(messages) {
   return data?.choices?.[0]?.message?.content ?? null;
 }
 
-// ANA ENDPOINT
+// ════════════════════════════════════════════════════════════════════════
+//  ANA CHAT ENDPOINT
+// ════════════════════════════════════════════════════════════════════════
 app.post("/api/chat", async (req, res) => {
   if (req.headers["x-app-secret"] !== APP_SECRET) {
     return res.status(401).json({ error: "Yetkisiz" });
@@ -186,7 +188,6 @@ app.post("/api/chat", async (req, res) => {
   }
 
   resetIfNewDay();
-
   let cevap = null;
 
   // Görsel analiz — direkt Gemini
@@ -194,14 +195,12 @@ app.post("/api/chat", async (req, res) => {
     cevap = await geminiCagir(messages, image);
     if (cevap) counts.gemini++;
   } else {
-    // Web araması gerekiyorsa Tavily ile bağlam ekle
     let webBilgisi = null;
     const sonMesaj = messages[messages.length - 1]?.content || "";
     if (TAVILY_KEY && webAramasiGerekliMi(sonMesaj)) {
       webBilgisi = await tavilyAra(sonMesaj);
     }
 
-    // Web bilgisi varsa mesajlara ekle
     const mesajlar = webBilgisi
       ? [...messages.slice(0, -1), {
           role: "user",
@@ -239,45 +238,93 @@ app.post("/api/chat", async (req, res) => {
   res.json({ choices: [{ message: { content: cevap } }] });
 });
 
-const PORT = process.env.PORT || 3000;
-const ELEVENLABS_KEY  = process.env.ELEVENLABS_API_KEY;
-const JARVIS_VOICE_ID = "WWtyH2oxeOp9yZwK8ERD"; // Jarvis - Robot sesi
-
+// ════════════════════════════════════════════════════════════════════════
+//  TTS ENDPOINT — Microsoft Edge TTS (Ücretsiz & Sınırsız)
+//  Jarvis sesi: en-US-GuyNeural (derin, profesyonel, robot benzeri)
+// ════════════════════════════════════════════════════════════════════════
 app.post("/api/tts", async (req, res) => {
   if (req.headers["x-app-secret"] !== APP_SECRET) {
     return res.status(401).json({ error: "Yetkisiz" });
   }
-  const { text } = req.body;
+
+  const { text, lang } = req.body;
   if (!text) return res.status(400).json({ error: "Metin gerekli" });
 
+  // Dile göre ses seç — hepsi profesyonel/derin sesler
+  const sesMap = {
+    "tr": "tr-TR-AhmetNeural",      // Türkçe erkek
+    "en": "en-US-GuyNeural",        // İngilizce — Jarvis'e en yakın
+    "de": "de-DE-ConradNeural",
+    "fr": "fr-FR-HenriNeural",
+    "es": "es-ES-AlvaroNeural",
+    "it": "it-IT-DiegoNeural",
+    "pt": "pt-PT-DuarteNeural",
+    "ru": "ru-RU-DmitryNeural",
+    "ja": "ja-JP-KeitaNeural",
+    "zh": "zh-CN-YunxiNeural",
+    "ko": "ko-KR-InJoonNeural",
+    "ar": "ar-SA-HamedNeural",
+    "nl": "nl-NL-MaartenNeural",
+    "pl": "pl-PL-MarekNeural",
+    "sv": "sv-SE-MattiasNeural",
+    "nb": "nb-NO-FinnNeural",
+    "da": "da-DK-JeppeNeural",
+    "fi": "fi-FI-HarriNeural",
+    "el": "el-GR-NestorasNeural",
+    "cs": "cs-CZ-AntoninNeural",
+    "hu": "hu-HU-TamasNeural",
+    "ro": "ro-RO-EmilNeural",
+    "uk": "uk-UA-OstapNeural",
+    "id": "id-ID-ArdiNeural",
+    "vi": "vi-VN-NamMinhNeural",
+    "hi": "hi-IN-MadhurNeural",
+    "default": "en-US-GuyNeural"
+  };
+
+  // Dil kodunu belirle (ilk 2 karakter)
+  const langCode = (lang || "tr").split("-")[0].toLowerCase();
+  const voice = sesMap[langCode] || sesMap["default"];
+
   try {
-    const response = await fetch(
-      `https://api.elevenlabs.io/v1/text-to-speech/${JARVIS_VOICE_ID}`,
-      {
-        method: "POST",
-        headers: {
-          "xi-api-key": ELEVENLABS_KEY,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          text: text,
-          model_id: "eleven_multilingual_v2",
-          voice_settings: {
-            stability: 0.75,
-            similarity_boost: 0.85,
-            style: 0.20,
-            use_speaker_boost: true
-          }
-        })
-      }
-    );
-    if (!response.ok) return res.status(500).json({ error: "TTS başarısız" });
-    const audioBuffer = await response.arrayBuffer();
-    res.set("Content-Type", "audio/mpeg");
-    res.send(Buffer.from(audioBuffer));
+    // Microsoft Edge TTS — ücretsiz, token gerektirmez
+    // WebSocket üzerinden çalışır
+    const { MsEdgeTTS, OUTPUT_FORMAT } = require("msedge-tts");
+    const tts = new MsEdgeTTS();
+
+    await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+
+    // Ses hızı ve pitch — Jarvis için biraz yavaş ve derin
+    const ssml = `
+      <speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis"
+             xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="en-US">
+        <voice name="${voice}">
+          <prosody rate="-8%" pitch="-12%" volume="100">
+            ${text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}
+          </prosody>
+        </voice>
+      </speak>`;
+
+    const chunks = [];
+    const stream = tts.toStream(ssml);
+
+    stream.on("data", chunk => chunks.push(chunk));
+    stream.on("end", () => {
+      const audioBuffer = Buffer.concat(chunks);
+      res.set("Content-Type", "audio/mpeg");
+      res.set("Content-Length", audioBuffer.length);
+      res.send(audioBuffer);
+    });
+    stream.on("error", err => {
+      console.log("Edge TTS stream hata:", err.message);
+      res.status(500).json({ error: "TTS hatası" });
+    });
+
   } catch (e) {
-    res.status(500).json({ error: "TTS hatası" });
+    console.log("Edge TTS hata:", e.message);
+    // Fallback: Android TTS kullan (boş 200 döndür, Android kendi TTS'ini kullanır)
+    res.status(500).json({ error: "TTS kullanılamıyor", fallback: true });
   }
 });
 
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("JARVIS backend aktif, port:", PORT));
