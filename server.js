@@ -9,6 +9,9 @@ const OPENROUTER_KEY  = process.env.OPENROUTER_API_KEY;
 const CEREBRAS_KEY    = process.env.CEREBRAS_API_KEY;
 const MISTRAL_KEY     = process.env.MISTRAL_API_KEY;
 const TAVILY_KEY      = process.env.TAVILY_API_KEY;
+const FISH_AUDIO_KEY  = process.env.FISH_AUDIO_API_KEY;
+
+const JARVIS_VOICE_ID = "13dec4f733da45d499a91816f0f3ba9b";
 
 const SYSTEM_PROMPT =
   "Sen JARVIS adında bir yapay zeka asistanısın. " +
@@ -19,7 +22,6 @@ const SYSTEM_PROMPT =
   "Madde madde yazma, düz konuş. " +
   "Emin olmadığın bilgileri söyleme.";
 
-// Günlük sayaçlar
 let counts = { date: "", groq: 0, gemini: 0, openrouter: 0, cerebras: 0, mistral: 0 };
 
 function resetIfNewDay() {
@@ -36,40 +38,23 @@ async function httpPost(url, headers, body) {
       headers: { "Content-Type": "application/json", ...headers },
       body: JSON.stringify(body)
     });
-    if (!res.ok) {
-      console.log(`HTTP ${res.status} → ${url}`);
-      return null;
-    }
+    if (!res.ok) { console.log(`HTTP ${res.status} -> ${url}`); return null; }
     return await res.json();
-  } catch (e) {
-    console.log(`Fetch hata: ${e.message}`);
-    return null;
-  }
+  } catch (e) { console.log(`Fetch hata: ${e.message}`); return null; }
 }
 
-// Tavily web araması
 async function tavilyAra(soru) {
   try {
     const res = await fetch("https://api.tavily.com/search", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        api_key: TAVILY_KEY,
-        query: soru,
-        search_depth: "basic",
-        max_results: 3
-      })
+      body: JSON.stringify({ api_key: TAVILY_KEY, query: soru, search_depth: "basic", max_results: 3 })
     });
     if (!res.ok) return null;
     const data = await res.json();
     if (!data.results || data.results.length === 0) return null;
-    return data.results
-      .map(r => `${r.title}: ${r.content}`)
-      .join("\n\n");
-  } catch (e) {
-    console.log("Tavily hata:", e.message);
-    return null;
-  }
+    return data.results.map(r => `${r.title}: ${r.content}`).join("\n\n");
+  } catch (e) { console.log("Tavily hata:", e.message); return null; }
 }
 
 function webAramasiGerekliMi(mesaj) {
@@ -80,96 +65,56 @@ function webAramasiGerekliMi(mesaj) {
     "kim kazandı", "skor", "maç", "match", "score",
     "ne zaman", "when", "tarih", "date", "2024", "2025", "2026"
   ];
-  const m = mesaj.toLowerCase();
-  return anahtar.some(k => m.includes(k));
+  return anahtar.some(k => mesaj.toLowerCase().includes(k));
 }
 
-// 1. GROQ
 async function groqCagir(messages) {
   const data = await httpPost(
     "https://api.groq.com/openai/v1/chat/completions",
     { Authorization: `Bearer ${GROQ_KEY}` },
-    {
-      model: "llama-3.3-70b-versatile",
-      messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
-      max_tokens: 500,
-      temperature: 0.7
-    }
+    { model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages], max_tokens: 500, temperature: 0.7 }
   );
   return data?.choices?.[0]?.message?.content ?? null;
 }
 
-// 2. GEMINI
 async function geminiCagir(messages, imageBase64) {
   const contents = messages
     .filter(m => m.role !== "system")
-    .map(m => ({
-      role: m.role === "assistant" ? "model" : "user",
-      parts: [{ text: m.content }]
-    }));
-
-  if (imageBase64 && contents.length > 0) {
-    contents[contents.length - 1].parts.push({
-      inline_data: { mime_type: "image/jpeg", data: imageBase64 }
-    });
-  }
-
-  const body = {
-    contents,
-    system_instruction: { parts: [{ text: SYSTEM_PROMPT }] }
-  };
-  if (!imageBase64) {
-    body.tools = [{ google_search: {} }];
-  }
-
+    .map(m => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] }));
+  if (imageBase64 && contents.length > 0)
+    contents[contents.length - 1].parts.push({ inline_data: { mime_type: "image/jpeg", data: imageBase64 } });
+  const body = { contents, system_instruction: { parts: [{ text: SYSTEM_PROMPT }] } };
+  if (!imageBase64) body.tools = [{ google_search: {} }];
   const data = await httpPost(
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,
-    {},
-    body
+    {}, body
   );
   return data?.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
 }
 
-// 3. CEREBRAS
 async function cerebrasCagir(messages) {
   const data = await httpPost(
     "https://api.cerebras.ai/v1/chat/completions",
     { Authorization: `Bearer ${CEREBRAS_KEY}` },
-    {
-      model: "llama-3.3-70b",
-      messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
-      max_tokens: 500,
-      temperature: 0.7
-    }
+    { model: "llama-3.3-70b", messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages], max_tokens: 500, temperature: 0.7 }
   );
   return data?.choices?.[0]?.message?.content ?? null;
 }
 
-// 4. MISTRAL
 async function mistralCagir(messages) {
   const data = await httpPost(
     "https://api.mistral.ai/v1/chat/completions",
     { Authorization: `Bearer ${MISTRAL_KEY}` },
-    {
-      model: "mistral-small-latest",
-      messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
-      max_tokens: 500,
-      temperature: 0.7
-    }
+    { model: "mistral-small-latest", messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages], max_tokens: 500, temperature: 0.7 }
   );
   return data?.choices?.[0]?.message?.content ?? null;
 }
 
-// 5. OPENROUTER
 async function openrouterCagir(messages) {
   const data = await httpPost(
     "https://openrouter.ai/api/v1/chat/completions",
     { Authorization: `Bearer ${OPENROUTER_KEY}` },
-    {
-      model: "meta-llama/llama-4-maverick:free",
-      messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
-      max_tokens: 500
-    }
+    { model: "meta-llama/llama-4-maverick:free", messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages], max_tokens: 500 }
   );
   return data?.choices?.[0]?.message?.content ?? null;
 }
@@ -178,28 +123,24 @@ async function openrouterCagir(messages) {
 //  ANA CHAT ENDPOINT
 // ════════════════════════════════════════════════════════════════════════
 app.post("/api/chat", async (req, res) => {
-  if (req.headers["x-app-secret"] !== APP_SECRET) {
+  if (req.headers["x-app-secret"] !== APP_SECRET)
     return res.status(401).json({ error: "Yetkisiz" });
-  }
 
   const { messages, image } = req.body;
-  if (!messages || !Array.isArray(messages)) {
+  if (!messages || !Array.isArray(messages))
     return res.status(400).json({ error: "Geçersiz istek" });
-  }
 
   resetIfNewDay();
   let cevap = null;
 
-  // Görsel analiz — direkt Gemini
   if (image) {
     cevap = await geminiCagir(messages, image);
     if (cevap) counts.gemini++;
   } else {
     let webBilgisi = null;
     const sonMesaj = messages[messages.length - 1]?.content || "";
-    if (TAVILY_KEY && webAramasiGerekliMi(sonMesaj)) {
+    if (TAVILY_KEY && webAramasiGerekliMi(sonMesaj))
       webBilgisi = await tavilyAra(sonMesaj);
-    }
 
     const mesajlar = webBilgisi
       ? [...messages.slice(0, -1), {
@@ -208,52 +149,67 @@ app.post("/api/chat", async (req, res) => {
         }]
       : messages;
 
-    // Fallback zinciri: Groq → Gemini → Cerebras → Mistral → OpenRouter
-    if (!cevap && counts.groq < 1000) {
-      cevap = await groqCagir(mesajlar);
-      if (cevap) counts.groq++;
-    }
-    if (!cevap && counts.gemini < 500) {
-      cevap = await geminiCagir(mesajlar, null);
-      if (cevap) counts.gemini++;
-    }
-    if (!cevap && counts.cerebras < 1000) {
-      cevap = await cerebrasCagir(mesajlar);
-      if (cevap) counts.cerebras++;
-    }
-    if (!cevap && counts.mistral < 500) {
-      cevap = await mistralCagir(mesajlar);
-      if (cevap) counts.mistral++;
-    }
-    if (!cevap) {
-      cevap = await openrouterCagir(mesajlar);
-      if (cevap) counts.openrouter++;
-    }
+    if (!cevap && counts.groq < 1000)    { cevap = await groqCagir(mesajlar);       if (cevap) counts.groq++; }
+    if (!cevap && counts.gemini < 500)   { cevap = await geminiCagir(mesajlar,null); if (cevap) counts.gemini++; }
+    if (!cevap && counts.cerebras < 1000){ cevap = await cerebrasCagir(mesajlar);   if (cevap) counts.cerebras++; }
+    if (!cevap && counts.mistral < 500)  { cevap = await mistralCagir(mesajlar);    if (cevap) counts.mistral++; }
+    if (!cevap)                          { cevap = await openrouterCagir(mesajlar); if (cevap) counts.openrouter++; }
   }
 
-  if (!cevap) {
-    cevap = "Tüm sistemler şu an meşgul. Birkaç saniye sonra tekrar dene.";
-  }
-
+  if (!cevap) cevap = "Tüm sistemler şu an meşgul. Birkaç saniye sonra tekrar dene.";
   res.json({ choices: [{ message: { content: cevap } }] });
 });
 
 // ════════════════════════════════════════════════════════════════════════
-//  TTS ENDPOINT — Microsoft Edge TTS (Ücretsiz & Sınırsız)
-//  Jarvis sesi: en-US-GuyNeural (derin, profesyonel, robot benzeri)
+//  TTS ENDPOINT
+//  1. Fish Audio — gerçek Jarvis sesi (FISH_AUDIO_API_KEY varsa)
+//  2. Edge TTS  — ücretsiz fallback
 // ════════════════════════════════════════════════════════════════════════
 app.post("/api/tts", async (req, res) => {
-  if (req.headers["x-app-secret"] !== APP_SECRET) {
+  if (req.headers["x-app-secret"] !== APP_SECRET)
     return res.status(401).json({ error: "Yetkisiz" });
-  }
 
   const { text, lang } = req.body;
   if (!text) return res.status(400).json({ error: "Metin gerekli" });
 
-  // Dile göre ses seç — hepsi profesyonel/derin sesler
+  // ── 1. Fish Audio ────────────────────────────────────────────────────
+  if (FISH_AUDIO_KEY) {
+    try {
+      console.log("Fish Audio deneniyor...");
+      const response = await fetch("https://api.fish.audio/v1/tts", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${FISH_AUDIO_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          text: text,
+          reference_id: JARVIS_VOICE_ID,
+          format: "mp3",
+          mp3_bitrate: 128,
+          normalize: true,
+          latency: "normal"
+        })
+      });
+
+      if (response.ok) {
+        console.log("Fish Audio basarili!");
+        const audioBuffer = await response.arrayBuffer();
+        res.set("Content-Type", "audio/mpeg");
+        res.set("Content-Length", audioBuffer.byteLength);
+        return res.send(Buffer.from(audioBuffer));
+      } else {
+        console.log("Fish Audio HTTP hata:", response.status, "-> Edge TTS'e geciliyor");
+      }
+    } catch (e) {
+      console.log("Fish Audio hata:", e.message, "-> Edge TTS'e geciliyor");
+    }
+  }
+
+  // ── 2. Edge TTS Fallback ─────────────────────────────────────────────
   const sesMap = {
-    "tr": "tr-TR-AhmetNeural",      // Türkçe erkek
-    "en": "en-US-GuyNeural",        // İngilizce — Jarvis'e en yakın
+    "tr": "tr-TR-AhmetNeural",
+    "en": "en-US-GuyNeural",
     "de": "de-DE-ConradNeural",
     "fr": "fr-FR-HenriNeural",
     "es": "es-ES-AlvaroNeural",
@@ -281,32 +237,31 @@ app.post("/api/tts", async (req, res) => {
     "default": "en-US-GuyNeural"
   };
 
-  // Dil kodunu belirle (ilk 2 karakter)
   const langCode = (lang || "tr").split("-")[0].toLowerCase();
   const voice = sesMap[langCode] || sesMap["default"];
 
   try {
-    // Microsoft Edge TTS — ücretsiz, token gerektirmez
-    // WebSocket üzerinden çalışır
     const { MsEdgeTTS, OUTPUT_FORMAT } = require("msedge-tts");
     const tts = new MsEdgeTTS();
-
     await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
 
-    // Ses hızı ve pitch — Jarvis için biraz yavaş ve derin
+    const safeText = text
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+
     const ssml = `
       <speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis"
              xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="en-US">
         <voice name="${voice}">
           <prosody rate="-8%" pitch="-12%" volume="100">
-            ${text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}
+            ${safeText}
           </prosody>
         </voice>
       </speak>`;
 
     const chunks = [];
     const stream = tts.toStream(ssml);
-
     stream.on("data", chunk => chunks.push(chunk));
     stream.on("end", () => {
       const audioBuffer = Buffer.concat(chunks);
@@ -316,12 +271,10 @@ app.post("/api/tts", async (req, res) => {
     });
     stream.on("error", err => {
       console.log("Edge TTS stream hata:", err.message);
-      res.status(500).json({ error: "TTS hatası" });
+      res.status(500).json({ error: "TTS hatası", fallback: true });
     });
-
   } catch (e) {
     console.log("Edge TTS hata:", e.message);
-    // Fallback: Android TTS kullan (boş 200 döndür, Android kendi TTS'ini kullanır)
     res.status(500).json({ error: "TTS kullanılamıyor", fallback: true });
   }
 });
